@@ -6,6 +6,7 @@ from core.services.session.session_manager import SessionManager
 from core.services.messaging.messagе_sender import MessageSender
 from core.services.cloudflare.cloudflare_waiter import CloudflareWaiter
 from core.models.models import Account, SendResult
+from playwright.async_api import TimeoutError as PWTimeoutError
 
 log = logging.getLogger("4based_bot")
 
@@ -113,7 +114,7 @@ class AccountWorker:
             raise _SessionExpiredError()
 
         await self._cf.wait(page, timeout=20)
-        await asyncio.sleep(3)
+        await asyncio.sleep(2)
 
         # профиль не существует
         not_found = await page.locator(
@@ -151,15 +152,144 @@ class AccountWorker:
                 raise _SessionExpiredError()
             raise _SkipProfile("chat-footer не появился")
 
-        await asyncio.sleep(2)
+        # ── КЛЮЧЕВОЕ: ждём пока WebSocket чата установится ──────────
+        # Ждём что textarea реально доступна и пуста (чат готов к вводу)
+        try:
+            await page.wait_for_function("""
+                () => {
+                    function deepFind(root) {
+                        const stack = [root];
+                        while (stack.length) {
+                            const n = stack.pop();
+                            if (!n) continue;
+                            if (n.tagName && n.tagName.toLowerCase() === 'textarea' &&
+                                n.classList && n.classList.contains('native-textarea')) return n;
+                            if (n.shadowRoot) stack.push(n.shadowRoot);
+                            const ch = n.children || [];
+                            for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+                        }
+                        return null;
+                    }
+                    const ta = deepFind(document);
+                    return ta !== null && !ta.disabled && !ta.readOnly;
+                }
+            """, timeout=10_000)
+        except PWTimeoutError:
+            raise _SkipProfile("textarea не стала доступна")
 
+        # Даём время WebSocket-у устаканиться
+        await asyncio.sleep(3)
+
+        # Вводим текст
         filled = await self._sender.fill_text(page, account.message_text)
         if not filled:
             raise _SkipProfile("textarea не найдена")
 
+        # Убеждаемся что текст реально появился в поле
+        try:
+            await page.wait_for_function(f"""
+                () => {{
+                    function deepFind(root) {{
+                        const stack = [root];
+                        while (stack.length) {{
+                            const n = stack.pop();
+                            if (!n) continue;
+                            if (n.tagName && n.tagName.toLowerCase() === 'textarea' &&
+                                n.classList && n.classList.contains('native-textarea')) return n;
+                            if (n.shadowRoot) stack.push(n.shadowRoot);
+                            const ch = n.children || [];
+                            for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+                        }}
+                        return null;
+                    }}
+                    const ta = deepFind(document);
+                    return ta && ta.value.length > 0;
+                }}
+            """, timeout=5_000)
+        except PWTimeoutError:
+            # текст не появился — пробуем ещё раз
+            log.warning("[%s] текст не появился в textarea — повторная попытка", account.email)
+            filled = await self._sender.fill_text(page, account.message_text)
+            if not filled:
+                raise _SkipProfile("не удалось ввести текст")
+            await asyncio.sleep(1)
+
+        # Небольшая пауза перед отправкой
         await asyncio.sleep(1)
+
+        # Отправляем
         await self._sender.send_enter(page)
-        await asyncio.sleep(2)
+
+        # Ждём подтверждения — textarea должна очиститься (сообщение ушло)
+        try:
+            await page.wait_for_function("""
+                () => {
+                    function deepFind(root) {
+                        const stack = [root];
+                        while (stack.length) {
+                            const n = stack.pop();
+                            if (!n) continue;
+                            if (n.tagName && n.tagName.toLowerCase() === 'textarea' &&
+                                n.classList && n.classList.contains('native-textarea')) return n;
+                            if (n.shadowRoot) stack.push(n.shadowRoot);
+                            const ch = n.children || [];
+                            for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+                        }
+                        return null;
+                    }
+                    const ta = deepFind(document);
+                    return !ta || ta.value === '';
+                }
+            """, timeout=8_000)
+            log.info("[%s] textarea очистилась — сообщение отправлено", account.email)
+        except PWTimeoutError:
+            # textarea не очистилась — значит Enter не сработал, пробуем кнопку submit
+            log.warning("[%s] textarea не очистилась — пробую кнопку отправки", account.email)
+
+            sent_via_btn = await page.evaluate("""
+                () => {
+                    const footer = document.querySelector('ion-footer.chat-write-area');
+                    const s0 = footer && footer.shadowRoot;
+                    const taHost = s0 && s0.querySelector('text-area');
+                    if (!taHost || !taHost.shadowRoot) return false;
+                    const form = taHost.shadowRoot.querySelector('form.write-area');
+                    if (!form) return false;
+                    const btn = form.querySelector('ion-button[type="submit"], button[type="submit"]');
+                    if (btn) { btn.click(); return true; }
+                    if (typeof form.requestSubmit === 'function') { form.requestSubmit(); return true; }
+                    return false;
+                }
+            """)
+
+            if not sent_via_btn:
+                raise _SkipProfile("не удалось отправить сообщение ни через Enter ни через кнопку")
+
+            # финальное ожидание очистки после кнопки
+            try:
+                await page.wait_for_function("""
+                    () => {
+                        function deepFind(root) {
+                            const stack = [root];
+                            while (stack.length) {
+                                const n = stack.pop();
+                                if (!n) continue;
+                                if (n.tagName && n.tagName.toLowerCase() === 'textarea' &&
+                                    n.classList && n.classList.contains('native-textarea')) return n;
+                                if (n.shadowRoot) stack.push(n.shadowRoot);
+                                const ch = n.children || [];
+                                for (let i = 0; i < ch.length; i++) stack.push(ch[i]);
+                            }
+                            return null;
+                        }
+                        const ta = deepFind(document);
+                        return !ta || ta.value === '';
+                    }
+                """, timeout=8_000)
+                log.info("[%s] отправлено через кнопку submit", account.email)
+            except PWTimeoutError:
+                raise _SkipProfile("сообщение зависло в статусе отправки")
+
+        await asyncio.sleep(1)
 
     @staticmethod
     async def _safe_close(context, browser):

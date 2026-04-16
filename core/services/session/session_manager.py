@@ -42,27 +42,31 @@ class SessionManager:
                 cf_ok = await self._cf.wait(page, timeout=30)
 
                 if not cf_ok:
+                    log.warning("[%s] Cloudflare не пройден (попытка %d)", account.email, attempt)
                     continue
 
                 await page.wait_for_selector('[name="email"]', timeout=15000)
-
                 await page.fill('[name="email"]', account.email)
                 await page.fill('[name="password"]', account.password)
 
-                btn = page.locator("button[type='submit']").first
+                btn = page.locator("ion-button.submit-button, button[type='submit']").first
+                await btn.wait_for(state="visible", timeout=10_000)
                 await btn.click()
 
                 for _ in range(20):
                     if "/login" not in page.url.lower():
+                        log.info("[%s] ✅ залогинен успешно (попытка %d)", account.email, attempt)
                         return True
                     await asyncio.sleep(0.5)
 
             except Exception:
                 await asyncio.sleep(1)
 
+        log.error("[%s] ❌ логин не удался после 3 попыток", account.email)
         return False
 
     async def ensure_logged_in(self, page, account: Account) -> bool:
         if await self.is_logged_in(page):
             return True
+        log.warning("[%s] сессия истекла — перелогиниваюсь…", account.email)
         return await self.login(page, account)

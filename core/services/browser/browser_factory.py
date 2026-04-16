@@ -13,7 +13,7 @@ class PlaywrightBrowserFactory:
         proxy_dict = self._proxy_parser.to_playwright_dict(proxy_url) if proxy_url else None
 
         browser = await playwright.chromium.launch(
-            headless=True,
+            headless=False,
             args=[
                 "--no-sandbox",
                 "--disable-dev-shm-usage",
