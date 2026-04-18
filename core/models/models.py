@@ -22,3 +22,6 @@ class SendResult:
     email: str
     success_count: int
     errors: list[str]
+    skip_count: int = 0
+    error_count: int = 0
+    total: int = 0

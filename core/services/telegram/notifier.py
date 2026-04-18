@@ -52,16 +52,16 @@ class TelegramNotifier:
         )
 
     async def worker_done(self, result: SendResult):
+        processed = result.success_count + result.skip_count + result.error_count
+        total_str = f" из {result.total}" if result.total else ""
 
-        txt = (
-            f"📧 `{result.email}`: "
-            f"отправлено *{result.success_count}* сообщений"
+        await self.info(
+            f"📧 *{result.email}*\n"
+            f"✅ Отправлено : *{result.success_count}*\n"
+            f"⏭ Пропущено  : {result.skip_count}\n"
+            f"❌ Ошибок     : {result.error_count}\n"
+            f"📊 Всего      : {processed}{total_str}"
         )
-
-        if result.errors:
-            txt += f"\n⚠️ Ошибок: {len(result.errors)}"
-
-        await self.info(txt)
 
     async def final(
         self,
