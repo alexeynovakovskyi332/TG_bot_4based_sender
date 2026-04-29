@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from bot.bot import bot
-from bot.events import stop_event_async, stop_event_thread
+from bot.events import create_session, remove_session
 from bot.states.bot_states import BotStates
 
 from core.models.models import Account
@@ -31,8 +31,9 @@ async def first_file_handler(message: types.Message, state: FSMContext):
     if not (message.document and message.document.mime_type == "text/plain"):
         return await message.reply("Загрузите .txt файл!")
 
+    user_id = message.from_user.id
     tg_file = await bot.get_file(message.document.file_id)
-    file_path = message.document.file_name
+    file_path = f"{user_id}_{message.document.file_name}"
 
     await bot.download_file(tg_file.file_path, file_path)
 
@@ -56,26 +57,12 @@ async def first_file_handler(message: types.Message, state: FSMContext):
 
         if ok:
             ok_count += 1
-            await notifier.proxy_ok(
-                idx,
-                len(accounts),
-                acc.email,
-                result
-            )
+            await notifier.proxy_ok(idx, len(accounts), acc.email, result)
         else:
             bad.append((acc.email, result))
-            await notifier.proxy_fail(
-                idx,
-                len(accounts),
-                acc.email,
-                result
-            )
+            await notifier.proxy_fail(idx, len(accounts), acc.email, result)
 
-    await notifier.proxy_summary(
-        ok_count,
-        len(accounts),
-        bad
-    )
+    await notifier.proxy_summary(ok_count, len(accounts), bad)
 
     await state.update_data(
         accounts=[
@@ -86,9 +73,7 @@ async def first_file_handler(message: types.Message, state: FSMContext):
 
     await state.set_state(BotStates.waiting_second_file)
 
-    await notifier.info(
-        "📂 Теперь загрузите второй файл"
-    )
+    await notifier.info("📂 Теперь загрузите второй файл")
 
 
 @router.message(BotStates.waiting_second_file)
@@ -97,8 +82,9 @@ async def second_file_handler(message: types.Message, state: FSMContext):
     if not (message.document and message.document.mime_type == "text/plain"):
         return await message.reply("Загрузите .txt файл!")
 
+    user_id = message.from_user.id
     tg_file = await bot.get_file(message.document.file_id)
-    file_path = message.document.file_name
+    file_path = f"{user_id}_{message.document.file_name}"
 
     await bot.download_file(tg_file.file_path, file_path)
 
@@ -116,8 +102,7 @@ async def second_file_handler(message: types.Message, state: FSMContext):
 
     await state.clear()
 
-    stop_event_async.clear()
-    stop_event_thread.clear()
+    stop_async, stop_thread = create_session(user_id)
 
     stop_kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -139,10 +124,13 @@ async def second_file_handler(message: types.Message, state: FSMContext):
 
     notifier = TelegramNotifier(message)
 
-    await orchestrator_global.run(
-        accounts,
-        profiles,
-        notifier,
-        stop_event_async,
-        stop_event_thread
-    )
+    try:
+        await orchestrator_global.run(
+            accounts,
+            profiles,
+            notifier,
+            stop_async,
+            stop_thread
+        )
+    finally:
+        remove_session(user_id)
