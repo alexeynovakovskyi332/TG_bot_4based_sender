@@ -1,5 +1,6 @@
 import os
 import asyncio
+import logging
 
 from aiogram import types, Router
 from aiogram.fsm.context import FSMContext
@@ -11,6 +12,7 @@ from bot.states.bot_states import BotStates
 
 from core.models.models import Account
 from core.services.telegram.notifier import TelegramNotifier
+from core.services.telegram.live_logger import TelegramLiveLogger
 from core.parser.account_file_parser import AccountFileParser
 from core.services.proxy.proxy_parser import ProxyParser
 from core.services.proxy.proxy_checker import ProxyChecker
@@ -124,6 +126,13 @@ async def second_file_handler(message: types.Message, state: FSMContext):
 
     notifier = TelegramNotifier(message)
 
+    # Создаём живой логгер — одно сообщение в Telegram, которое редактируется
+    bot_logger = logging.getLogger("4based_bot")
+    live_log = TelegramLiveLogger(bot, message.chat.id)
+    live_log.setFormatter(logging.Formatter("%(asctime)s %(message)s", datefmt="%H:%M:%S"))
+    bot_logger.addHandler(live_log)
+    await live_log.start()
+
     try:
         await orchestrator_global.run(
             accounts,
@@ -133,4 +142,6 @@ async def second_file_handler(message: types.Message, state: FSMContext):
             stop_thread
         )
     finally:
+        bot_logger.removeHandler(live_log)
+        await live_log.stop()
         remove_session(user_id)
