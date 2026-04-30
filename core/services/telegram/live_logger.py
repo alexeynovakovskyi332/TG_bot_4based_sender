@@ -23,7 +23,7 @@ class TelegramLiveLogger(logging.Handler):
         await live.stop()
     """
 
-    MAX_LINES = 30          # сколько последних строк хранить
+    MAX_LINES = 15          # сколько последних строк хранить
     UPDATE_INTERVAL = 3     # секунд между редактированиями сообщения
     MAX_CHARS = 3800        # лимит Telegram — 4096, оставляем запас
 
